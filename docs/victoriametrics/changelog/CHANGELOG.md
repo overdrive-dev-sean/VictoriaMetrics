@@ -26,7 +26,7 @@ See also [LTS releases](https://docs.victoriametrics.com/victoriametrics/lts-rel
 
 ## tip
 
-* FEATURE: [vmsingle](https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/) and `vmstorage` in [VictoriaMetrics cluster](https://docs.victoriametrics.com/victoriametrics/cluster-victoriametrics/): search the global index instead of every per-day index of a partition when the search time range fully covers that partition. This reduces CPU and memory usage of `/api/v1/series`, `/api/v1/labels`, `/api/v1/label/.../values` and queries with long time ranges. Other time ranges still use the per-day index. See [#11791](https://github.com/VictoriaMetrics/VictoriaMetrics/issues/11791).
+* FEATURE: [vmsingle](https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/) and `vmstorage` in [VictoriaMetrics cluster](https://docs.victoriametrics.com/victoriametrics/cluster-victoriametrics/): add the `-search.useGlobalIndexForWholeMonths` command-line flag, disabled by default. When set, search the global index instead of every per-day index of a partition when the search time range fully covers that partition. This reduces CPU and memory usage of `/api/v1/series`, `/api/v1/labels`, `/api/v1/label/.../values` and queries with long time ranges. Other time ranges still use the per-day index. See [#11791](https://github.com/VictoriaMetrics/VictoriaMetrics/issues/11791).
 
 ## [v1.155.0](https://github.com/VictoriaMetrics/VictoriaMetrics/releases/tag/v1.155.0)
 

@@ -4427,8 +4427,10 @@ func TestStorageSearch_wholePartitionUsesGlobalIndex(t *testing.T) {
 	s.DebugFlush()
 	s.MustClose()
 
-	s = MustOpenStorage(t.Name(), OpenOptions{})
-	defer s.MustClose()
+	s = MustOpenStorage(t.Name(), OpenOptions{GlobalIndexForWholeMonths: true})
+	defer func() {
+		s.MustClose()
+	}()
 
 	tfs := NewTagFilters()
 	if err := tfs.Add(nil, []byte(".*"), false, true); err != nil {
@@ -4524,6 +4526,23 @@ func TestStorageSearch_wholePartitionUsesGlobalIndex(t *testing.T) {
 
 	// The time range exceeds all the partitions.
 	f(TimeRange{jan.MinTimestamp - 100*msecPerDay, mar.MaxTimestamp + 100*msecPerDay}, "jan", "feb", "mar")
+
+	// Flag off: the same searches use the per-day index, which holds nothing
+	// for this data.
+	s.MustClose()
+	s = MustOpenStorage(t.Name(), OpenOptions{})
+	f(jan)
+	f(TimeRange{jan.MinTimestamp - 1, jan.MaxTimestamp + 1})
+	f(TimeRange{jan.MinTimestamp, mar.MaxTimestamp})
+	f(TimeRange{jan.MinTimestamp - 100*msecPerDay, mar.MaxTimestamp + 100*msecPerDay})
+
+	// With the per-day index disabled the flag has no effect: every time range
+	// uses the global index, including the ranges that do not cover a month.
+	s.MustClose()
+	s = MustOpenStorage(t.Name(), OpenOptions{DisablePerDayIndex: true, GlobalIndexForWholeMonths: true})
+	f(jan, "jan")
+	f(TimeRange{jan.MinTimestamp + 1, jan.MaxTimestamp}, "jan")
+	f(TimeRange{jan.MinTimestamp + 1, feb.MaxTimestamp - 1}, "jan", "feb")
 }
 
 // TestStorageSearch_globalIndexMatchesPerDayIndex goes through every code path

@@ -83,6 +83,10 @@ type Storage struct {
 
 	disablePerDayIndex bool
 
+	// globalIndexForWholeMonths makes a search that fully covers a partition use
+	// the global index of that partition instead of its per-day indexes.
+	globalIndexForWholeMonths bool
+
 	tb *table
 
 	// Series cardinality limiters.
@@ -171,6 +175,7 @@ type OpenOptions struct {
 	MaxHourlySeries             int
 	MaxDailySeries              int
 	DisablePerDayIndex          bool
+	GlobalIndexForWholeMonths   bool
 	TrackMetricNamesStats       bool
 	IDBPrefillStart             time.Duration
 	LogNewSeries                bool
@@ -271,6 +276,7 @@ func MustOpenStorage(path string, opts OpenOptions) *Storage {
 	s.minTimestampForCompositeIndex = mustGetMinTimestampForCompositeIndex(metadataDir, isEmptyDB)
 
 	s.disablePerDayIndex = opts.DisablePerDayIndex
+	s.globalIndexForWholeMonths = opts.GlobalIndexForWholeMonths
 
 	// Load legacy indexDBs.
 	legacyIDBPath := filepath.Join(path, indexdbDirname)
