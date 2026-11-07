@@ -4391,3 +4391,388 @@ func TestStorageAddFlushSearchMetricNamesConcurrently(t *testing.T) {
 		}
 	}
 }
+
+// TestStorageSearch_wholePartitionUsesGlobalIndex verifies that a search uses
+// the global index of a partition if and only if the search time range fully
+// covers that partition.
+//
+// The series are written with the per-day index disabled, so they have only
+// global index entries. Reopening the storage with the per-day index enabled
+// makes a series visible only to the searches that use the global index.
+func TestStorageSearch_wholePartitionUsesGlobalIndex(t *testing.T) {
+	defer testRemoveAll(t)
+
+	month := func(m time.Month) TimeRange {
+		return TimeRange{
+			MinTimestamp: time.Date(2025, m, 1, 0, 0, 0, 0, time.UTC).UnixMilli(),
+			MaxTimestamp: time.Date(2025, m+1, 1, 0, 0, 0, 0, time.UTC).UnixMilli() - 1,
+		}
+	}
+	jan, feb, mar := month(time.January), month(time.February), month(time.March)
+
+	var mrs []MetricRow
+	addRow := func(name string, ts int64) {
+		mn := MetricName{
+			MetricGroup: []byte(name),
+			Tags:        []Tag{{Key: []byte(name + "_label"), Value: []byte(name + "_value")}},
+		}
+		mrs = append(mrs, MetricRow{MetricNameRaw: mn.marshalRaw(nil), Timestamp: ts, Value: 1})
+	}
+	addRow("jan", jan.MinTimestamp+msecPerDay)
+	addRow("feb", feb.MinTimestamp+msecPerDay)
+	addRow("mar", mar.MinTimestamp+msecPerDay)
+
+	s := MustOpenStorage(t.Name(), OpenOptions{DisablePerDayIndex: true})
+	s.AddRows(mrs, defaultPrecisionBits)
+	s.DebugFlush()
+	s.MustClose()
+
+	s = MustOpenStorage(t.Name(), OpenOptions{})
+	defer s.MustClose()
+
+	tfs := NewTagFilters()
+	if err := tfs.Add(nil, []byte(".*"), false, true); err != nil {
+		t.Fatalf("unexpected error in TagFilters.Add: %v", err)
+	}
+	tfss := []*TagFilters{tfs}
+
+	f := func(tr TimeRange, want ...string) {
+		t.Helper()
+
+		wantLabels := []string{}
+		if len(want) > 0 {
+			wantLabels = append(wantLabels, "__name__")
+		}
+		for _, name := range want {
+			wantLabels = append(wantLabels, name+"_label")
+		}
+		slices.Sort(wantLabels)
+		wantNames := append([]string{}, want...)
+		slices.Sort(wantNames)
+
+		metricNames, err := s.SearchMetricNames(noDeadlineContext, nil, tfss, tr, 1e9)
+		if err != nil {
+			t.Fatalf("SearchMetricNames(%s) failed unexpectedly: %v", &tr, err)
+		}
+		gotNames := []string{}
+		for _, metricName := range metricNames {
+			var mn MetricName
+			if err := mn.UnmarshalString(metricName); err != nil {
+				t.Fatalf("cannot unmarshal metric name %q: %v", metricName, err)
+			}
+			gotNames = append(gotNames, string(mn.MetricGroup))
+		}
+		slices.Sort(gotNames)
+		if diff := cmp.Diff(wantNames, gotNames); diff != "" {
+			t.Fatalf("unexpected metric names for %s (-want, +got):\n%s", &tr, diff)
+		}
+
+		tsids, err := s.SearchTSIDs(noDeadlineContext, nil, tfss, tr, 1e9)
+		if err != nil {
+			t.Fatalf("SearchTSIDs(%s) failed unexpectedly: %v", &tr, err)
+		}
+		if len(tsids) != len(want) {
+			t.Fatalf("unexpected TSID count for %s: got %d, want %d", &tr, len(tsids), len(want))
+		}
+
+		gotLabels, err := s.SearchLabelNames(noDeadlineContext, nil, nil, tr, 1e6, 1e9)
+		if err != nil {
+			t.Fatalf("SearchLabelNames(%s) failed unexpectedly: %v", &tr, err)
+		}
+		slices.Sort(gotLabels)
+		if diff := cmp.Diff(wantLabels, gotLabels); diff != "" {
+			t.Fatalf("unexpected label names for %s (-want, +got):\n%s", &tr, diff)
+		}
+
+		gotValues, err := s.SearchLabelValues(noDeadlineContext, nil, "__name__", nil, tr, 1e6, 1e9)
+		if err != nil {
+			t.Fatalf("SearchLabelValues(%s) failed unexpectedly: %v", &tr, err)
+		}
+		slices.Sort(gotValues)
+		if diff := cmp.Diff(wantNames, gotValues); diff != "" {
+			t.Fatalf("unexpected label values for %s (-want, +got):\n%s", &tr, diff)
+		}
+
+		gotSuffixes, err := s.SearchTagValueSuffixes(noDeadlineContext, nil, tr, "", "", '.', 1e6)
+		if err != nil {
+			t.Fatalf("SearchTagValueSuffixes(%s) failed unexpectedly: %v", &tr, err)
+		}
+		slices.Sort(gotSuffixes)
+		if diff := cmp.Diff(wantNames, gotSuffixes); diff != "" {
+			t.Fatalf("unexpected tag value suffixes for %s (-want, +got):\n%s", &tr, diff)
+		}
+	}
+
+	// A single month.
+	f(jan, "jan")
+	f(TimeRange{jan.MinTimestamp + 1, jan.MaxTimestamp})
+	f(TimeRange{jan.MinTimestamp, jan.MaxTimestamp - 1})
+	f(TimeRange{jan.MinTimestamp + 1, jan.MaxTimestamp - 1})
+	f(TimeRange{jan.MinTimestamp - 1, jan.MaxTimestamp + 1}, "jan")
+	f(TimeRange{jan.MinTimestamp + msecPerDay, jan.MaxTimestamp + 1})
+
+	// Several months, all ends aligned.
+	f(TimeRange{jan.MinTimestamp, feb.MaxTimestamp}, "jan", "feb")
+	f(TimeRange{jan.MinTimestamp, mar.MaxTimestamp}, "jan", "feb", "mar")
+
+	// Several months with partial ends: only the months in the middle and the
+	// months that are fully covered use the global index.
+	f(TimeRange{jan.MinTimestamp + 1, feb.MaxTimestamp}, "feb")
+	f(TimeRange{jan.MinTimestamp, feb.MaxTimestamp - 1}, "jan")
+	f(TimeRange{jan.MinTimestamp + 1, feb.MaxTimestamp - 1})
+	f(TimeRange{jan.MinTimestamp + 1, mar.MaxTimestamp - 1}, "feb")
+
+	// The time range exceeds all the partitions.
+	f(TimeRange{jan.MinTimestamp - 100*msecPerDay, mar.MaxTimestamp + 100*msecPerDay}, "jan", "feb", "mar")
+}
+
+// TestStorageSearch_globalIndexMatchesPerDayIndex goes through every code path
+// that writes index entries and verifies that the global index of a partition
+// and the union of its per-day indexes hold the same data afterwards.
+func TestStorageSearch_globalIndexMatchesPerDayIndex(t *testing.T) {
+	defer testRemoveAll(t)
+
+	ts := func(month time.Month, day int) int64 {
+		return time.Date(2025, month, day, 12, 0, 0, 0, time.UTC).UnixMilli()
+	}
+	row := func(name string, ts int64) MetricRow {
+		mn := MetricName{
+			MetricGroup: []byte(name),
+			Tags:        []Tag{{Key: []byte("label"), Value: []byte(name + "_value")}},
+		}
+		return MetricRow{MetricNameRaw: mn.marshalRaw(nil), Timestamp: ts, Value: 1}
+	}
+
+	s := MustOpenStorage(t.Name(), OpenOptions{})
+	defer func() {
+		s.MustClose()
+	}()
+
+	check := func() {
+		t.Helper()
+		s.DebugFlush()
+		testAssertGlobalIndexMatchesPerDayIndex(t, s)
+	}
+	add := func(mrs ...MetricRow) {
+		t.Helper()
+		s.AddRows(mrs, defaultPrecisionBits)
+		check()
+	}
+
+	// A new series.
+	add(row("a", ts(time.March, 10)))
+
+	// One batch with the same series in three partitions. This goes through
+	// the same-name fast path in Storage.add().
+	add(row("b", ts(time.February, 15)), row("b", ts(time.March, 15)), row("b", ts(time.April, 15)))
+
+	// A series first seen in a later month and then backfilled to an earlier
+	// month. The TSID comes from tsidCache and the earlier month has never had
+	// this series.
+	add(row("c", ts(time.May, 5)))
+	add(row("c", ts(time.January, 5)))
+
+	// Late samples on an old day of an existing series.
+	add(row("a", ts(time.March, 2)))
+
+	// An existing series backfilled into a month it never had.
+	add(row("a", time.Date(2024, time.December, 31, 12, 0, 0, 0, time.UTC).UnixMilli()))
+
+	// The TSID comes from the tsidCache persisted on disk, while the in-memory
+	// metricIDCache and dateMetricIDCache are empty.
+	s.MustClose()
+	s = MustOpenStorage(t.Name(), OpenOptions{})
+	add(row("a", ts(time.March, 3)))
+	add(row("a", time.Date(2024, time.November, 11, 12, 0, 0, 0, time.UTC).UnixMilli()))
+
+	// The tsidCache is empty. The per-day index does not have the series for
+	// this new day, so another TSID is created for the same metric name in the
+	// partition that already has the series.
+	s.resetAndSaveTSIDCache()
+	add(row("a", ts(time.March, 4)))
+	add(row("b", ts(time.February, 16)))
+
+	// Register metric names without adding samples.
+	register := func(mrs ...MetricRow) {
+		t.Helper()
+		s.RegisterMetricNames(nil, mrs)
+		check()
+	}
+	register(row("d", ts(time.March, 20)))
+	register(row("a", ts(time.June, 6)))
+	s.resetAndSaveTSIDCache()
+	register(row("a", ts(time.March, 21)))
+
+	// Delete a series and then write it again.
+	tfs := NewTagFilters()
+	if err := tfs.Add(nil, []byte("c"), false, false); err != nil {
+		t.Fatalf("unexpected error in TagFilters.Add: %v", err)
+	}
+	if n, err := s.DeleteSeries(noDeadlineContext, nil, []*TagFilters{tfs}, 1e9); err != nil {
+		t.Fatalf("DeleteSeries() failed unexpectedly: %v", err)
+	} else if n == 0 {
+		t.Fatalf("DeleteSeries() did not delete any series")
+	}
+	check()
+	add(row("c", ts(time.January, 6)), row("c", ts(time.May, 6)))
+}
+
+// testAssertGlobalIndexMatchesPerDayIndex verifies that each partition indexDB
+// returns the same search results from its global index and from its per-day
+// indexes. A per-day entry without a global entry fails this check because a
+// search that covers the partition would miss that series.
+func testAssertGlobalIndexMatchesPerDayIndex(t *testing.T, s *Storage) {
+	t.Helper()
+
+	ptws := s.tb.GetAllPartitions(nil)
+	defer s.tb.PutPartitions(ptws)
+
+	newTFS := func(key, value string, isNegative, isRegexp bool) []*TagFilters {
+		tfs := NewTagFilters()
+		if err := tfs.Add([]byte(key), []byte(value), isNegative, isRegexp); err != nil {
+			t.Fatalf("unexpected error in TagFilters.Add: %v", err)
+		}
+		return []*TagFilters{tfs}
+	}
+	filters := [][]*TagFilters{
+		newTFS("", ".+", false, true),
+		newTFS("", "a", false, false),
+		newTFS("label", "a_value", true, false),
+		newTFS("label", "(a|b)_value", false, true),
+		newTFS("no_such_label", "", false, false),
+	}
+
+	sortedSet := func(m map[string]struct{}) []string {
+		a := make([]string, 0, len(m))
+		for k := range m {
+			a = append(a, k)
+		}
+		slices.Sort(a)
+		return a
+	}
+
+	for _, ptw := range ptws {
+		db := ptw.pt.idb
+		testAssertPerDayIndexEntriesHaveGlobalEntries(t, db)
+
+		for _, tfss := range filters {
+			name := fmt.Sprintf("indexDB=%s, filters=%s", db.name, tfss)
+
+			lnsPerDay, err := db.searchLabelNames(noDeadlineContext, nil, tfss, db.tr, 1e6, 1e9)
+			if err != nil {
+				t.Fatalf("%s: unexpected error: %v", name, err)
+			}
+			lnsGlobal, err := db.searchLabelNames(noDeadlineContext, nil, tfss, globalIndexTimeRange, 1e6, 1e9)
+			if err != nil {
+				t.Fatalf("%s: unexpected error: %v", name, err)
+			}
+			if diff := cmp.Diff(sortedSet(lnsPerDay), sortedSet(lnsGlobal)); diff != "" {
+				t.Fatalf("%s: label names differ (-perDay, +global):\n%s", name, diff)
+			}
+
+			lvsPerDay, err := db.searchLabelValues(noDeadlineContext, nil, "label", tfss, db.tr, 1e6, 1e9)
+			if err != nil {
+				t.Fatalf("%s: unexpected error: %v", name, err)
+			}
+			lvsGlobal, err := db.searchLabelValues(noDeadlineContext, nil, "label", tfss, globalIndexTimeRange, 1e6, 1e9)
+			if err != nil {
+				t.Fatalf("%s: unexpected error: %v", name, err)
+			}
+			if diff := cmp.Diff(sortedSet(lvsPerDay), sortedSet(lvsGlobal)); diff != "" {
+				t.Fatalf("%s: label values differ (-perDay, +global):\n%s", name, diff)
+			}
+
+			tsidsPerDay, err := db.searchTSIDs(noDeadlineContext, nil, tfss, db.tr, 1e9)
+			if err != nil {
+				t.Fatalf("%s: unexpected error: %v", name, err)
+			}
+			tsidsGlobal, err := db.searchTSIDs(noDeadlineContext, nil, tfss, globalIndexTimeRange, 1e9)
+			if err != nil {
+				t.Fatalf("%s: unexpected error: %v", name, err)
+			}
+			if !reflect.DeepEqual(tsidsPerDay, tsidsGlobal) && len(tsidsPerDay)+len(tsidsGlobal) > 0 {
+				t.Fatalf("%s: TSIDs differ:\nperDay: %+v\nglobal: %+v", name, tsidsPerDay, tsidsGlobal)
+			}
+
+			mnsPerDay, err := db.searchMetricNames(noDeadlineContext, nil, tfss, db.tr, 1e9)
+			if err != nil {
+				t.Fatalf("%s: unexpected error: %v", name, err)
+			}
+			mnsGlobal, err := db.searchMetricNames(noDeadlineContext, nil, tfss, globalIndexTimeRange, 1e9)
+			if err != nil {
+				t.Fatalf("%s: unexpected error: %v", name, err)
+			}
+			slices.Sort(mnsPerDay)
+			slices.Sort(mnsGlobal)
+			mnsPerDay, mnsGlobal = slices.Compact(mnsPerDay), slices.Compact(mnsGlobal)
+			if !slices.Equal(mnsPerDay, mnsGlobal) {
+				t.Fatalf("%s: metric names differ:\nperDay: %q\nglobal: %q", name, mnsPerDay, mnsGlobal)
+			}
+		}
+	}
+}
+
+// testAssertPerDayIndexEntriesHaveGlobalEntries scans the whole indexDB and
+// verifies that each (date, tag)->metricID entry has a (tag)->metricID entry and
+// that each (date)->metricID entry has metricID->TSID and metricID->metricName
+// entries in the same indexDB.
+func testAssertPerDayIndexEntriesHaveGlobalEntries(t *testing.T, db *indexDB) {
+	t.Helper()
+
+	is := db.getIndexSearch()
+	defer db.putIndexSearch(is)
+	ts := &is.ts
+
+	scan := func(nsPrefix byte, f func(mp *tagToMetricIDsRowParser)) {
+		t.Helper()
+		var mp tagToMetricIDsRowParser
+		prefix := []byte{nsPrefix}
+		ts.Seek(prefix)
+		for ts.NextItem() {
+			if !strings.HasPrefix(string(ts.Item), string(prefix)) {
+				break
+			}
+			if err := mp.Init(ts.Item, nsPrefix); err != nil {
+				t.Fatalf("cannot parse index row: %v", err)
+			}
+			mp.ParseMetricIDs()
+			f(&mp)
+		}
+		if err := ts.Error(); err != nil {
+			t.Fatalf("index scan failed: %v", err)
+		}
+	}
+
+	globalTags := make(map[string]*uint64set.Set)
+	scan(nsPrefixTagToMetricIDs, func(mp *tagToMetricIDsRowParser) {
+		key := string(mp.Tag.Marshal(nil))
+		m := globalTags[key]
+		if m == nil {
+			m = &uint64set.Set{}
+			globalTags[key] = m
+		}
+		m.AddMulti(mp.MetricIDs)
+	})
+	metricIDs := &uint64set.Set{}
+	scan(nsPrefixDateTagToMetricIDs, func(mp *tagToMetricIDsRowParser) {
+		m := globalTags[string(mp.Tag.Marshal(nil))]
+		for _, metricID := range mp.MetricIDs {
+			if m == nil || !m.Has(metricID) {
+				t.Fatalf("indexDB %s: metricID %d for tag %q=%q on date %s has no entry in the global index",
+					db.name, metricID, mp.Tag.Key, mp.Tag.Value, dateToString(mp.Date))
+			}
+			metricIDs.Add(metricID)
+		}
+	})
+	metricIDs.ForEach(func(part []uint64) bool {
+		for _, metricID := range part {
+			if !is.hasMetricIDSlow(metricID) {
+				t.Fatalf("indexDB %s: metricID %d has per-day entries but no metricID->TSID entry", db.name, metricID)
+			}
+			if _, ok := is.searchMetricName(nil, metricID); !ok {
+				t.Fatalf("indexDB %s: metricID %d has per-day entries but no metricID->metricName entry", db.name, metricID)
+			}
+		}
+		return true
+	})
+}

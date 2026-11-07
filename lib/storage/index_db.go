@@ -510,6 +510,15 @@ func (db *indexDB) containsTimeRange(tr TimeRange) (bool, TimeRange) {
 		return false, tr
 	}
 
+	if tr.MinTimestamp <= db.tr.MinTimestamp && tr.MaxTimestamp >= db.tr.MaxTimestamp {
+		// The search covers the whole indexDB time range. Every metricID in a
+		// per-day index also has an entry in the global index of the same
+		// indexDB, so a single scan of the global index replaces one scan per
+		// day. This also makes long range searches far cheaper when series live
+		// for more than a day.
+		return true, globalIndexTimeRange
+	}
+
 	if tr.MinTimestamp < db.tr.MinTimestamp {
 		tr.MinTimestamp = db.tr.MinTimestamp
 	}
