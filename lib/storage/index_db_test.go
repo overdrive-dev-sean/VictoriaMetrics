@@ -1502,12 +1502,43 @@ func testIndexDBContainsTimeRange(t *testing.T, disablePerDayIndex bool) {
 
 	// Time range fully matches indexDB time range.
 	tr = db.tr
-	f(tr, true, tr)
+	f(tr, true, globalIndexTimeRange)
 
 	// Time range fully includes indexDB time range.
 	tr.MinTimestamp = time.Date(2025, 12, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
 	tr.MaxTimestamp = time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
-	f(tr, true, db.tr)
+	f(tr, true, globalIndexTimeRange)
+
+	// Time range exceeds indexDB time range by one millisecond on each side.
+	tr.MinTimestamp = db.tr.MinTimestamp - 1
+	tr.MaxTimestamp = db.tr.MaxTimestamp + 1
+	f(tr, true, globalIndexTimeRange)
+
+	// Time range starts one millisecond too late to cover indexDB time range.
+	tr.MinTimestamp = db.tr.MinTimestamp + 1
+	tr.MaxTimestamp = db.tr.MaxTimestamp
+	f(tr, true, tr)
+
+	// Time range ends one millisecond too early to cover indexDB time range.
+	tr.MinTimestamp = db.tr.MinTimestamp
+	tr.MaxTimestamp = db.tr.MaxTimestamp - 1
+	f(tr, true, tr)
+
+	// Time range starts early but ends one millisecond too early.
+	tr.MinTimestamp = db.tr.MinTimestamp - 1000
+	tr.MaxTimestamp = db.tr.MaxTimestamp - 1
+	f(tr, true, TimeRange{
+		MinTimestamp: db.tr.MinTimestamp,
+		MaxTimestamp: db.tr.MaxTimestamp - 1,
+	})
+
+	// Time range ends late but starts one millisecond too late.
+	tr.MinTimestamp = db.tr.MinTimestamp + 1
+	tr.MaxTimestamp = db.tr.MaxTimestamp + 1000
+	f(tr, true, TimeRange{
+		MinTimestamp: db.tr.MinTimestamp + 1,
+		MaxTimestamp: db.tr.MaxTimestamp,
+	})
 }
 
 func TestIndexDBSearchTSIDs(t *testing.T) {

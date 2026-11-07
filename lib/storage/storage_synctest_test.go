@@ -1584,3 +1584,66 @@ func TestStorageAddRows_currHourMetricIDs(t *testing.T) {
 		f(t, true)
 	})
 }
+
+// TestStoragePrefill_perDayEntriesHaveGlobalEntries verifies that the next-day
+// prefill and the next-partition prefill never leave a per-day index entry
+// without a global index entry in the same partition. A search that covers a
+// whole partition uses its global index and would miss such a series.
+func TestStoragePrefill_perDayEntriesHaveGlobalEntries(t *testing.T) {
+	defer testRemoveAll(t)
+
+	synctest.Test(t, func(t *testing.T) {
+		// Start two days before the end of the month, so that the run goes
+		// through the prefill of a next day in the same partition and through
+		// the prefill of a next day that belongs to the next partition.
+		ct := time.Now().UTC()
+		nextMonth := time.Date(ct.Year(), ct.Month()+1, 1, 0, 0, 0, 0, time.UTC)
+		time.Sleep(nextMonth.Add(-49 * time.Hour).Sub(ct))
+
+		s := MustOpenStorage(t.Name(), OpenOptions{})
+		defer s.MustClose()
+
+		const (
+			numStableSeries = 1000
+			step            = 5 * time.Minute
+		)
+		newSeries := 0
+		addRows := func() {
+			t.Helper()
+			ct := time.Now().UTC().UnixMilli()
+			var mrs []MetricRow
+			add := func(name string) {
+				mn := MetricName{
+					MetricGroup: []byte(name),
+					Tags:        []Tag{{Key: []byte("job"), Value: []byte("test")}},
+				}
+				mrs = append(mrs, MetricRow{MetricNameRaw: mn.marshalRaw(nil), Timestamp: ct, Value: 1})
+			}
+			for i := range numStableSeries {
+				add(fmt.Sprintf("stable_%d", i))
+			}
+			// Series that are written only once, at a different time each.
+			for range 5 {
+				add(fmt.Sprintf("new_%d", newSeries))
+				newSeries++
+			}
+			s.AddRows(mrs, defaultPrecisionBits)
+			s.DebugFlush()
+		}
+
+		end := nextMonth.Add(2 * time.Hour)
+		for time.Now().Before(end) {
+			addRows()
+			time.Sleep(step)
+		}
+		s.DebugFlush()
+
+		if got := s.timeseriesPreCreated.Load(); got == 0 {
+			t.Fatalf("the next partition prefill did not run")
+		}
+		if got := s.slowPerDayIndexInserts.Load(); got == 0 {
+			t.Fatalf("no per-day index entries were created")
+		}
+		testAssertGlobalIndexMatchesPerDayIndex(t, s)
+	})
+}
