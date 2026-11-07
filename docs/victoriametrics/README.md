@@ -1588,8 +1588,9 @@ What to expect:
 
 * Prefer setting this flag on fresh installations.
 * Disabling per-day index on installations with historical data is Ok.
-* Re-enabling per-day index on installations with historical data will make it unsearchable,
-  except for search queries with a time range that fully covers the partition holding that data.
+* Re-enabling per-day index on installations with historical data will make it unsearchable.
+  If `-search.useGlobalIndexForWholeMonths` is set, then search queries with a time range that fully covers
+  the partition holding that data still find it.
 
 See also [Why IndexDB size is so large?](https://docs.victoriametrics.com/victoriametrics/faq/#why-indexdb-size-is-so-large).
 

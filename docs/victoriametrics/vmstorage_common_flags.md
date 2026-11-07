@@ -210,6 +210,8 @@ See the docs at https://docs.victoriametrics.com/victoriametrics/cluster-victori
      The maximum number of tag values returned per search. See also -search.maxLabelsAPISeries and -search.maxLabelsAPIDuration (default 100000)
   -search.maxUniqueTimeseries int
      The maximum number of unique time series, which can be scanned during every query. This allows protecting against heavy queries, which select unexpectedly high number of series. When set to zero, the limit is automatically calculated based on -search.maxConcurrentRequests (inversely proportional) and memory available to the process (proportional). See also -search.max* command-line flags at vmselect
+  -search.useGlobalIndexForWholeMonths
+     Whether to search the global index instead of every per-day index of a monthly partition when the search time range fully covers that partition. This reduces CPU and memory usage of searches over long time ranges when series live for more than a day. Such a search counts the series of the whole month against -search.maxLabelsAPISeries and finds series written while -disablePerDayIndex was set. The flag has no effect when -disablePerDayIndex is set. See https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/#index-tuning
   -secret.flags array
      Comma-separated list of flag names with secret values. Values for these flags are hidden in logs and on /metrics page
      Supports an array of values separated by comma or specified via multiple flags.

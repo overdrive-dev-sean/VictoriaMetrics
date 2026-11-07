@@ -1399,16 +1399,19 @@ func TestMatchTagFilters(t *testing.T) {
 func TestIndexDBContainsTimeRange(t *testing.T) {
 	defer testRemoveAll(t)
 	for _, disablePerDayIndex := range []bool{false, true} {
-		name := fmt.Sprintf("disablePerDayIndex=%t", disablePerDayIndex)
-		t.Run(name, func(t *testing.T) {
-			testIndexDBContainsTimeRange(t, disablePerDayIndex)
-		})
+		for _, globalIndexForWholeMonths := range []bool{false, true} {
+			name := fmt.Sprintf("disablePerDayIndex=%t/globalIndexForWholeMonths=%t", disablePerDayIndex, globalIndexForWholeMonths)
+			t.Run(name, func(t *testing.T) {
+				testIndexDBContainsTimeRange(t, disablePerDayIndex, globalIndexForWholeMonths)
+			})
+		}
 	}
 }
 
-func testIndexDBContainsTimeRange(t *testing.T, disablePerDayIndex bool) {
+func testIndexDBContainsTimeRange(t *testing.T, disablePerDayIndex, globalIndexForWholeMonths bool) {
 	s := MustOpenStorage(t.Name(), OpenOptions{
-		DisablePerDayIndex: disablePerDayIndex,
+		DisablePerDayIndex:        disablePerDayIndex,
+		GlobalIndexForWholeMonths: globalIndexForWholeMonths,
 	})
 	defer s.MustClose()
 	ptw := s.tb.MustGetPartition(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).UnixMilli())
@@ -1500,19 +1503,26 @@ func testIndexDBContainsTimeRange(t *testing.T, disablePerDayIndex bool) {
 	tr.MaxTimestamp = time.Date(2026, 2, 15, 0, 0, 0, 0, time.UTC).UnixMilli()
 	f(tr, false, tr)
 
+	// A search that covers the whole indexDB time range uses the global index
+	// only if the flag is set. Otherwise it uses the per-day index.
+	wantCovering := db.tr
+	if globalIndexForWholeMonths {
+		wantCovering = globalIndexTimeRange
+	}
+
 	// Time range fully matches indexDB time range.
 	tr = db.tr
-	f(tr, true, globalIndexTimeRange)
+	f(tr, true, wantCovering)
 
 	// Time range fully includes indexDB time range.
 	tr.MinTimestamp = time.Date(2025, 12, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
 	tr.MaxTimestamp = time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
-	f(tr, true, globalIndexTimeRange)
+	f(tr, true, wantCovering)
 
 	// Time range exceeds indexDB time range by one millisecond on each side.
 	tr.MinTimestamp = db.tr.MinTimestamp - 1
 	tr.MaxTimestamp = db.tr.MaxTimestamp + 1
-	f(tr, true, globalIndexTimeRange)
+	f(tr, true, wantCovering)
 
 	// Time range starts one millisecond too late to cover indexDB time range.
 	tr.MinTimestamp = db.tr.MinTimestamp + 1

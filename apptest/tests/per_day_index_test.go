@@ -56,8 +56,11 @@ type startSUTFunc func(name string, disablePerDayIndex bool) apptest.PrometheusW
 // per-day index.
 //
 // The data inserted with disabled per-day index is not searchable with per-day
-// index enabled unless the search time range fully includes the indexDB time
-// range: such search uses the global index, so samples can be found.
+// index enabled. Previously it was the case that when time range is > 40 days
+// or fully includes the indexDB time range then the search would switch to
+// global index search and samples could be found. This is not so anymore: if
+// per-day index is enabled, then only per-day index is searched; and if per-day
+// index is disabled, then only global index is searched.
 func testSearchWithDisabledPerDayIndex(tc *apptest.TestCase, start startSUTFunc) {
 	t := tc.T()
 
@@ -150,10 +153,8 @@ func testSearchWithDisabledPerDayIndex(tc *apptest.TestCase, start startSUTFunc)
 	// - sample1 is not searchable within the time range of Jan 20th
 	// - sample1 is searchable within the time range of Jan 1st-20th (because
 	//   the metric1 metricID will be found in the per-day index for Jan 1st).
-	// - sample2 is not searchable when the time range does not fully include
-	//   the partition of Jan 2024
-	// - sample2 is searchable when the time range fully includes the partition
-	//   of Jan 2024, because such search uses the global index
+	// - sample2 is not searchable when the time range is <= 40 days
+	// - sample2 is not searchable when the time range is > 40 days
 	sample3 := []string{"metric1 333 1705708800000"} // 2024-01-20T00:00:00Z
 	sut.PrometheusAPIV1ImportPrometheus(t, sample3, apptest.QueryOpts{})
 	sut.ForceFlush(t)
@@ -201,13 +202,12 @@ func testSearchWithDisabledPerDayIndex(tc *apptest.TestCase, start startSUTFunc)
 		},
 	})
 
-	// Time range fully includes the partition of Jan 2024.
+	// Time range > 40 days
 	assertSearchResults(sut, &opts{
 		start: "2024-01-01T00:00:00Z",
 		end:   "2024-02-29T23:59:59Z",
 		wantSeries: []map[string]string{
 			{"__name__": "metric1"},
-			{"__name__": "metric2"},
 		},
 		wantQueryResults: []*apptest.QueryResult{
 			{
@@ -216,10 +216,6 @@ func testSearchWithDisabledPerDayIndex(tc *apptest.TestCase, start startSUTFunc)
 					{Timestamp: 1704067200000, Value: float64(111)},
 					{Timestamp: 1705708800000, Value: float64(333)},
 				},
-			},
-			{
-				Metric:  map[string]string{"__name__": "metric2"},
-				Samples: []*apptest.Sample{{Timestamp: 1704067200000, Value: float64(222)}},
 			},
 		},
 	})

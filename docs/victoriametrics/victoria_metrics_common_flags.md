@@ -541,6 +541,8 @@ See the docs at https://docs.victoriametrics.com/victoriametrics/
      Whether to fix lookback interval to 'step' query arg value. If set to true, the query model becomes closer to InfluxDB data model. If set to true, then -search.maxLookback and -search.maxStalenessInterval are ignored
   -search.treatDotsAsIsInRegexps
      Whether to treat dots as is in regexp label filters used in queries. For example, foo{bar=~"a.b.c"} will be automatically converted to foo{bar=~"a\\.b\\.c"}, i.e. all the dots in regexp filters will be automatically escaped in order to match only dot char instead of matching any char. Dots in ".+", ".*" and ".{n}" regexps aren't escaped. This option is DEPRECATED in favor of {__graphite__="a.*.c"} syntax for selecting metrics matching the given Graphite metrics filter
+  -search.useGlobalIndexForWholeMonths
+     Whether to search the global index instead of every per-day index of a monthly partition when the search time range fully covers that partition. This reduces CPU and memory usage of searches over long time ranges when series live for more than a day. Such a search counts the series of the whole month against -search.maxLabelsAPISeries and finds series written while -disablePerDayIndex was set. The flag has no effect when -disablePerDayIndex is set. See https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/#index-tuning
   -secret.flags array
      Comma-separated list of flag names with secret values. Values for these flags are hidden in logs and on /metrics page
      Supports an array of values separated by comma or specified via multiple flags.

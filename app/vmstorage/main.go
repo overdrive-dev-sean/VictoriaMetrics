@@ -99,6 +99,11 @@ var (
 		"This may improve performance and decrease disk space usage for the use cases with fixed set of timeseries scattered across a "+
 		"big time range (for example, when loading years of historical data). "+
 		"See https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/#index-tuning")
+	useGlobalIndexForWholeMonths = flag.Bool("search.useGlobalIndexForWholeMonths", false, "Whether to search the global index instead of every per-day index of a monthly partition "+
+		"when the search time range fully covers that partition. This reduces CPU and memory usage of searches over long time ranges when series live for more than a day. "+
+		"Such a search counts the series of the whole month against -search.maxLabelsAPISeries and finds series written while -disablePerDayIndex was set. "+
+		"The flag has no effect when -disablePerDayIndex is set. "+
+		"See https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/#index-tuning")
 	trackMetricNamesStats = flag.Bool("storage.trackMetricNamesStats", true, "Whether to track ingest and query requests for timeseries metric names. "+
 		"This feature allows to track metric names unused at query requests. "+
 		"See https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/#track-ingested-metrics-usage")
@@ -160,6 +165,7 @@ func Init(vmselectMaxConcurrentRequests int, vmselectMaxQueueDuration time.Durat
 		MaxHourlySeries:             getMaxHourlySeries(),
 		MaxDailySeries:              getMaxDailySeries(),
 		DisablePerDayIndex:          *disablePerDayIndex,
+		GlobalIndexForWholeMonths:   *useGlobalIndexForWholeMonths,
 		TrackMetricNamesStats:       *trackMetricNamesStats,
 		IDBPrefillStart:             *idbPrefillStart,
 		LogNewSeries:                *logNewSeries,
